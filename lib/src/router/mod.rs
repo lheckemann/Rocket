@@ -2,6 +2,8 @@ mod collider;
 mod route;
 
 use std::collections::hash_map::HashMap;
+use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 
 use self::collider::Collider;
 pub use self::route::Route;
@@ -14,7 +16,33 @@ type Selector = Method;
 
 #[derive(Default)]
 pub struct Router {
-    routes: HashMap<Selector, Vec<Route>>, // using 'selector' for now
+    routes: HashMap<Selector, BinaryHeap<RouteOrderByRank>>, // using 'selector' for now
+}
+
+struct RouteOrderByRank (pub Route);
+
+impl RouteOrderByRank {
+    pub fn as_route(&self) -> &Route { &self.0 }
+}
+
+impl PartialEq<RouteOrderByRank> for RouteOrderByRank {
+    fn eq(&self, other: &RouteOrderByRank) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RouteOrderByRank {}
+
+impl PartialOrd for RouteOrderByRank {
+    fn partial_cmp(&self, other: &RouteOrderByRank) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RouteOrderByRank {
+    fn cmp(&self, other: &RouteOrderByRank) -> Ordering {
+        self.as_route().rank.cmp(&other.as_route().rank)
+    }
 }
 
 impl Router {
@@ -24,17 +52,14 @@ impl Router {
 
     pub fn add(&mut self, route: Route) {
         let selector = route.method;
-        let entries = self.routes.entry(selector).or_insert_with(|| vec![]);
-        // TODO: We really just want an insertion at the correct spot here,
-        // instead of pushing to the end and _then_ sorting.
-        entries.push(route);
-        entries.sort_by(|a, b| a.rank.cmp(&b.rank));
+        let entries = self.routes.entry(selector).or_insert_with(BinaryHeap::new);
+        entries.push(RouteOrderByRank(route))
     }
 
     pub fn route<'b>(&'b self, req: &Request) -> Vec<&'b Route> {
-        // Note that routes are presorted by rank on each `add`.
         let matches = self.routes.get(&req.method()).map_or(vec![], |routes| {
             routes.iter()
+                .map(|r| r.as_route())
                 .filter(|r| r.collides_with(req))
                 .collect()
         });
@@ -47,8 +72,8 @@ impl Router {
     pub fn has_collisions(&self) -> bool {
         let mut result = false;
         for routes in self.routes.values() {
-            for (i, a_route) in routes.iter().enumerate() {
-                for b_route in routes.iter().skip(i + 1) {
+            for (i, a_route) in routes.iter().map(|r| r.as_route()).enumerate() {
+                for b_route in routes.iter().map(|r| r.as_route()).skip(i + 1) {
                     if a_route.collides_with(b_route) {
                         result = true;
                         error!("{} and {} collide!", a_route, b_route);
@@ -62,7 +87,7 @@ impl Router {
 
     #[inline]
     pub fn routes<'a>(&'a self) -> impl Iterator<Item=&'a Route> + 'a {
-        self.routes.values().flat_map(|v| v.iter())
+        self.routes.values().flat_map(|v| v.iter().map(|r| r.as_route()))
     }
 }
 
