@@ -82,6 +82,8 @@ mod test {
     use request::Request;
     use data::Data;
     use handler::Outcome;
+    use http::MediaType;
+    use http::parse::parse_accept;
 
     fn dummy_handler(req: &Request, _: Data) -> Outcome<'static> {
         Outcome::from(req, "hi")
@@ -441,5 +443,59 @@ mod test {
         let router = router_with_routes(&["/hello/<b>/age"]);
         assert!(match_params(&router, "/hello/sergio/age", &["sergio"]));
         assert!(match_params(&router, "/hello/you/age", &["you"]));
+    }
+
+    impl Route {
+        fn with_format(&self, format : MediaType) -> Route {
+            let mut ret = self.clone();
+            ret.format = Some(format);
+            ret
+        }
+
+        fn has_format(&self, format : MediaType) -> bool {
+            Some(format) == self.format
+        }
+    }
+
+    fn route_with_accept<'a>(router: &'a Router, uri: &str, accept: &str) -> Option<&'a Route> {
+        let rocket = Rocket::custom(Config::development().unwrap(), true);
+        let mut request = Request::new(&rocket, Get, URI::new(uri));
+        request.add_header(parse_accept(accept).unwrap());
+        let matches = router.route(&request);
+        if matches.len() > 0 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn test_content_negotiation() {
+        let any = Route::new(Get, "/", dummy_handler);
+        let json_only = any.with_format(MediaType::JSON);
+        let html_only = any.with_format(MediaType::HTML);
+        let mut router = Router::new();
+        router.add(json_only);
+        router.add(html_only);
+
+        let resolves_to = |accept, format| {
+            route_with_accept(&router, "/", accept).unwrap().has_format(format)
+        };
+
+        // TODO: Which type do we expect in this case?
+        // assert!(route_with_accept(&router, "/", "*/*").unwrap().has_format(MediaType::JSON))
+
+        assert!(resolves_to("application/json", MediaType::JSON));
+        assert!(resolves_to("text/html;q=0.8,application/json", MediaType::JSON));
+        assert!(resolves_to("text/x-unknown,application/json;q=0.8", MediaType::JSON));
+
+        // All else being equal, the first content type sent by the client should be preferred.
+        // This is not stipulated by any HTTP standard, but is a sensible and deterministic behaviour.
+        assert!(resolves_to("application/json,text/html", MediaType::JSON));
+        assert!(resolves_to("text/html,application/json", MediaType::HTML));
+
+        // TODO: Distinguish Not Found/Not Acceptable cases
+        // route_with_accept(&router, "/", "image/png") // Should 406
+        // route_with_accept(&router, "/foo", "application/json") // Should 404
     }
 }
